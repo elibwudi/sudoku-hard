@@ -16,4 +16,10 @@
     <string name="win_message">用时 %1$s，失误 %2$d 次。继续挑战下一道艰难题吧！</string>
     <string name="win_next">再来一局</string>
     <string name="win_stay">再看看</string>
+    <string name="guide_title">技巧图鉴</string>
+    <string name="got_it">知道了</string>
+    <string name="hint_title_fmt">💡 %1$s</string>
+    <string name="hint_apply_place">帮我填入</string>
+    <string name="hint_apply_eliminate">帮我删除</string>
+    <string name="hint_self">我自己来</string>
 </resources>

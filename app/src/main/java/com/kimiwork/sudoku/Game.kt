@@ -85,6 +85,25 @@ class Game(
         return true
     }
 
+    /** 指导功能：直接帮玩家落子（与手动落子走同一套维护逻辑）。 */
+    fun applyHintPlacement(idx: Int, d: Int) {
+        if (isGiven(idx) || finished) return
+        pushUndo()
+        entries[idx] = d
+        notes[idx] = 0
+        if (autoNotes) removeFromPeerNotes(idx, d)
+        if (isComplete()) finished = true
+    }
+
+    /** 指导功能：批量删除草稿候选（数对/区块等消除技巧）。 */
+    fun applyHintEliminations(elims: List<Pair<Int, Int>>) {
+        if (elims.isEmpty() || finished) return
+        pushUndo()
+        for ((cell, d) in elims) {
+            notes[cell] = notes[cell] and SudokuEngine.bitOf(d).inv()
+        }
+    }
+
     /** 自动草稿：开启时立刻为所有空格重算合法候选。 */
     fun toggleAutoNotes() {
         autoNotes = !autoNotes

@@ -23,6 +23,23 @@ class SudokuBoardView @JvmOverloads constructor(
 
     var onCellSelected: ((Int) -> Unit)? = null
 
+    /** 教学提示高亮：目标格与关联格。 */
+    var hintTargets: Set<Int> = emptySet()
+    var hintRelated: Set<Int> = emptySet()
+
+    fun setHint(targets: List<Int>, related: List<Int>) {
+        hintTargets = targets.toSet()
+        hintRelated = related.toSet() - hintTargets
+        invalidate()
+    }
+
+    fun clearHint() {
+        if (hintTargets.isEmpty() && hintRelated.isEmpty()) return
+        hintTargets = emptySet()
+        hintRelated = emptySet()
+        invalidate()
+    }
+
     private val density = resources.displayMetrics.density
 
     private val givenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -45,6 +62,8 @@ class SudokuBoardView @JvmOverloads constructor(
     private val selectedFill = Paint().apply { color = Color.rgb(0xC9, 0xD2, 0xFF) }
     private val peerFill = Paint().apply { color = Color.rgb(0xEC, 0xEF, 0xFB) }
     private val sameFill = Paint().apply { color = Color.rgb(0xDE, 0xE3, 0xFF) }
+    private val hintTargetFill = Paint().apply { color = Color.rgb(0xFF, 0xC9, 0x6E) }
+    private val hintRelatedFill = Paint().apply { color = Color.rgb(0xFF, 0xF1, 0xC2) }
     private val thinLine = Paint().apply {
         color = Color.rgb(0xD9, 0xDC, 0xE6)
         strokeWidth = density
@@ -84,6 +103,10 @@ class SudokuBoardView @JvmOverloads constructor(
             }
             fillCell(canvas, s, cell, selectedFill)
         }
+
+        // ---- 教学提示高亮（叠加在基础高亮之上） ----
+        for (i in hintRelated) fillCell(canvas, i, cell, hintRelatedFill)
+        for (i in hintTargets) fillCell(canvas, i, cell, hintTargetFill)
 
         // ---- 数字与草稿 ----
         givenPaint.textSize = cell * 0.60f

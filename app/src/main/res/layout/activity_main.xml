@@ -68,18 +68,30 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"
         android:orientation="horizontal"
-        android:weightSum="4">
+        android:weightSum="5">
+
+        <Button
+            android:id="@+id/btnHint"
+            android:layout_width="0dp"
+            android:layout_height="46dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="3dp"
+            android:background="@drawable/bg_control"
+            android:text="💡 提示"
+            android:textColor="@color/ink"
+            android:textSize="12sp"
+            android:textAllCaps="false" />
 
         <Button
             android:id="@+id/btnUndo"
             android:layout_width="0dp"
             android:layout_height="46dp"
             android:layout_weight="1"
-            android:layout_marginEnd="4dp"
+            android:layout_marginHorizontal="3dp"
             android:background="@drawable/bg_control"
             android:text="↩ 撤销"
             android:textColor="@color/ink"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textAllCaps="false" />
 
         <Button
@@ -87,11 +99,11 @@
             android:layout_width="0dp"
             android:layout_height="46dp"
             android:layout_weight="1"
-            android:layout_marginHorizontal="4dp"
+            android:layout_marginHorizontal="3dp"
             android:background="@drawable/bg_control"
             android:text="⌫ 橡皮"
             android:textColor="@color/ink"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textAllCaps="false" />
 
         <Button
@@ -99,11 +111,11 @@
             android:layout_width="0dp"
             android:layout_height="46dp"
             android:layout_weight="1"
-            android:layout_marginHorizontal="4dp"
+            android:layout_marginHorizontal="3dp"
             android:background="@drawable/bg_control"
             android:text="✎ 草稿"
             android:textColor="@color/ink"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textAllCaps="false" />
 
         <Button
@@ -111,11 +123,11 @@
             android:layout_width="0dp"
             android:layout_height="46dp"
             android:layout_weight="1"
-            android:layout_marginStart="4dp"
+            android:layout_marginStart="3dp"
             android:background="@drawable/bg_control"
             android:text="⚡ 自动草稿"
             android:textColor="@color/ink"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textAllCaps="false" />
     </LinearLayout>
 

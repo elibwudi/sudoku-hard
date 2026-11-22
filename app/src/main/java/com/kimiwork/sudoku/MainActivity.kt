@@ -66,8 +66,19 @@ class MainActivity : Activity() {
             }
         }
 
-        undoButton.setOnClickListener { if (game?.undo() == true) refresh() }
-        eraseButton.setOnClickListener { if (game?.erase() == true) refresh() }
+        findViewById<Button>(R.id.btnHint).setOnClickListener { onHint() }
+        undoButton.setOnClickListener {
+            if (game?.undo() == true) {
+                boardView.clearHint()
+                refresh()
+            }
+        }
+        eraseButton.setOnClickListener {
+            if (game?.erase() == true) {
+                boardView.clearHint()
+                refresh()
+            }
+        }
         notesButton.setOnClickListener {
             game?.let {
                 it.notesMode = !it.notesMode
@@ -113,9 +124,49 @@ class MainActivity : Activity() {
     private fun onDigit(d: Int) {
         val g = game ?: return
         if (g.onDigit(d)) {
+            boardView.clearHint()
             refresh()
             if (g.finished) onWin()
         }
+    }
+
+    // ---------- 新手指导 ----------
+
+    private fun onHint() {
+        val g = game ?: return
+        if (g.finished) return
+        val hint = SudokuTutor.findHint(g)
+        if (hint == null) {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.guide_title)
+                .setMessage(SudokuTutor.GUIDE_TEXT)
+                .setPositiveButton(R.string.got_it, null)
+                .show()
+            return
+        }
+        boardView.setHint(hint.targets, hint.related)
+        hint.targets.firstOrNull()?.let {
+            g.selected = it
+            boardView.invalidate()
+        }
+        val applyLabel = if (hint.place) R.string.hint_apply_place else R.string.hint_apply_eliminate
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.hint_title_fmt, hint.technique))
+            .setMessage(hint.explanation)
+            .setPositiveButton(applyLabel) { _, _ -> applyHint(g, hint) }
+            .setNegativeButton(R.string.hint_self, null)
+            .show()
+    }
+
+    private fun applyHint(g: Game, hint: SudokuTutor.Hint) {
+        if (hint.place) {
+            g.applyHintPlacement(hint.targets.first(), hint.digit)
+        } else {
+            g.applyHintEliminations(hint.eliminations)
+        }
+        boardView.clearHint()
+        refresh()
+        if (g.finished) onWin()
     }
 
     private fun startNewGame() {
