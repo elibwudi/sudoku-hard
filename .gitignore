@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+build/
+*/build/
+
+# 本机构建产物与配置
+.android-build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 系统
+.DS_Store
+Thumbs.db

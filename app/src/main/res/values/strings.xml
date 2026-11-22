@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">艰难数独</string>
+    <string name="mistakes_fmt">失误 %1$d</string>
+    <string name="undo">撤销</string>
+    <string name="erase">橡皮</string>
+    <string name="notes">草稿</string>
+    <string name="auto_notes">自动草稿</string>
+    <string name="new_game">新一局</string>
+    <string name="loading">正在生成艰难谜题…</string>
+    <string name="new_game_title">开始新一局？</string>
+    <string name="new_game_message">当前进度将被放弃，生成一道全新的艰难题目。</string>
+    <string name="new_game_confirm">开新局</string>
+    <string name="cancel">取消</string>
+    <string name="win_title">恭喜通关！</string>
+    <string name="win_message">用时 %1$s，失误 %2$d 次。继续挑战下一道艰难题吧！</string>
+    <string name="win_next">再来一局</string>
+    <string name="win_stay">再看看</string>
+</resources>
