@@ -4,7 +4,10 @@ package com.kimiwork.sudoku
  * 新手指导引擎：分析当前盘面，按由易到难的顺序找出下一步逻辑，
  * 并生成中文讲解，帮助玩家理解"为什么"而不是直接报答案。
  *
- * 技巧顺序：纠错 → 唯余法 → 摒除法 → 数对占位 → 区块摒除。
+ * 关键原则：以玩家当前的草稿（铅笔笔记）为推理基础——
+ * 消除类提示删掉候选后，后续提示能基于删减后的草稿继续推进，形成教学链条。
+ *
+ * 技巧顺序：纠错 → 唯余法/排除收尾 → 摒除法 → 数对占位 → 隐性数对 → 区块摒除 → 行列区块。
  */
 object SudokuTutor {
 
@@ -50,15 +53,27 @@ object SudokuTutor {
 
     private val boxes: List<List<Int>> by lazy { namedUnits.take(9).map { it.second } }
 
+    /**
+     * 有效候选：优先使用玩家当前草稿（可能已被提示/手动删减），
+     * 草稿为空才回退到按盘面计算的全部合法候选。
+     */
+    private fun effMask(game: Game, board: IntArray, i: Int): Int = when {
+        board[i] != 0 -> 0
+        game.notes[i] != 0 -> game.notes[i]
+        else -> SudokuEngine.candidateMask(board, i)
+    }
+
     /** 找出当前最值得教的一步；null 表示没有可教的基础技巧。 */
     fun findHint(game: Game): Hint? {
         val board = IntArray(81) { game.valueAt(it) }
 
         findMistakeHint(game, board)?.let { return it }
-        findNakedSingle(board)?.let { return it }
-        findHiddenSingle(board)?.let { return it }
+        findNakedSingle(game, board)?.let { return it }
+        findHiddenSingle(game, board)?.let { return it }
         findNakedPair(game, board)?.let { return it }
+        findHiddenPair(game, board)?.let { return it }
         findPointing(game, board)?.let { return it }
+        findClaiming(game, board)?.let { return it }
         return null
     }
 
@@ -87,45 +102,60 @@ object SudokuTutor {
         return null
     }
 
-    // ---------- 1. 唯余法（裸单元） ----------
+    // ---------- 1. 唯余法 / 排除收尾 ----------
 
-    private fun findNakedSingle(board: IntArray): Hint? {
+    private fun findNakedSingle(game: Game, board: IntArray): Hint? {
         for (i in 0 until 81) {
             if (board[i] != 0) continue
-            val mask = SudokuEngine.candidateMask(board, i)
-            if (Integer.bitCount(mask) == 1) {
-                val d = Integer.numberOfTrailingZeros(mask)
-                val excluded = (1..9).filter { it != d && peers[i].any { p -> board[p] == it } }
+            val mask = effMask(game, board, i)
+            if (Integer.bitCount(mask) != 1) continue
+            val d = Integer.numberOfTrailingZeros(mask)
+            val rawMask = SudokuEngine.candidateMask(board, i)
+
+            if (game.notes[i] != 0 && Integer.bitCount(rawMask) > 1) {
+                // 靠之前删除候选（提示或手动）逼出来的唯一候选
                 return Hint(
-                    technique = "唯余法",
-                    explanation = "看${rc(i)}：它所在的行、列、宫已经出现了 " +
-                        "${excluded.joinToString("、")}。\n\n" +
-                        "1–9 里只剩 $d 没出现过，所以这一格只能填 $d。",
+                    technique = "排除收尾",
+                    explanation = "看${rc(i)}的草稿：经过前面的排除，候选已经被删到只剩 $d 了。\n\n" +
+                        "候选只剩一个，这一格就确定是 $d——这就是持续删减候选的价值。",
                     targets = listOf(i),
                     related = peers[i].filter { board[it] != 0 },
                     digit = d,
                     place = true
                 )
             }
+
+            val excluded = (1..9).filter { it != d && peers[i].any { p -> board[p] == it } }
+            return Hint(
+                technique = "唯余法",
+                explanation = "看${rc(i)}：它所在的行、列、宫已经出现了 " +
+                    "${excluded.joinToString("、")}。\n\n" +
+                    "1–9 里只剩 $d 没出现过，所以这一格只能填 $d。",
+                targets = listOf(i),
+                related = peers[i].filter { board[it] != 0 },
+                digit = d,
+                place = true
+            )
         }
         return null
     }
 
     // ---------- 2. 摒除法（隐性单元） ----------
 
-    private fun findHiddenSingle(board: IntArray): Hint? {
+    private fun findHiddenSingle(game: Game, board: IntArray): Hint? {
         for ((unitName, unit) in namedUnits) {
             for (d in 1..9) {
                 if (unit.any { board[it] == d }) continue
                 val places = unit.filter {
-                    board[it] == 0 && SudokuEngine.candidateMask(board, it) and bitOf(d) != 0
+                    board[it] == 0 && effMask(game, board, it) and bitOf(d) != 0
                 }
                 if (places.size == 1) {
                     val i = places[0]
                     return Hint(
                         technique = "摒除法",
-                        explanation = "在$unitName 里找数字 $d：其它空格所在的行或列上已经出现了 $d，" +
-                            "都不能再放。\n\n整${unitName}只有${rc(i)}能放 $d，所以它就是 $d。",
+                        explanation = "在$unitName 里找数字 $d：按当前草稿，其它空格都不能放 $d" +
+                            "（所在行/列已有 $d，或候选已被排除）。\n\n" +
+                            "整$unitName 只有${rc(i)}能放 $d，所以它就是 $d。",
                         targets = listOf(i),
                         related = unit.filter { it != i },
                         digit = d,
@@ -142,14 +172,14 @@ object SudokuTutor {
     private fun findNakedPair(game: Game, board: IntArray): Hint? {
         for ((unitName, unit) in namedUnits) {
             val pairs = unit.filter {
-                board[it] == 0 && Integer.bitCount(SudokuEngine.candidateMask(board, it)) == 2
+                board[it] == 0 && Integer.bitCount(effMask(game, board, it)) == 2
             }
             for (x in pairs.indices) {
                 for (y in x + 1 until pairs.size) {
                     val a = pairs[x]
                     val b = pairs[y]
-                    val mask = SudokuEngine.candidateMask(board, a)
-                    if (mask != SudokuEngine.candidateMask(board, b)) continue
+                    val mask = effMask(game, board, a)
+                    if (mask != effMask(game, board, b)) continue
                     val digits = (1..9).filter { mask and bitOf(it) != 0 }
                     // 只有草稿里确实存在可删标记时，这个技巧才"看得见效果"
                     val elims = mutableListOf<Pair<Int, Int>>()
@@ -162,10 +192,10 @@ object SudokuTutor {
                     if (elims.isNotEmpty()) {
                         return Hint(
                             technique = "数对占位法",
-                            explanation = "${rc(a)}和${rc(b)}的候选数都只有 ${digits[0]} 和 ${digits[1]}。" +
+                            explanation = "${rc(a)}和${rc(b)}的候选都只有 ${digits[0]} 和 ${digits[1]}。" +
                                 "无论谁是谁，这两个数字必定占满这两格。\n\n" +
                                 "所以$unitName 的其它空格都不可能是 ${digits[0]} 或 ${digits[1]}，" +
-                                "可以把这些候选删掉（共 ${elims.size} 个）。",
+                                "可以把这些候选删掉（共 ${elims.size} 个）。删完再点提示，往往能接出下一步。",
                             targets = listOf(a, b),
                             related = elims.map { it.first }.distinct(),
                             digit = digits[0],
@@ -179,7 +209,56 @@ object SudokuTutor {
         return null
     }
 
-    // ---------- 4. 区块摒除法（宫内候选锁定到一行/列） ----------
+    // ---------- 4. 隐性数对法 ----------
+
+    private fun findHiddenPair(game: Game, board: IntArray): Hint? {
+        for ((unitName, unit) in namedUnits) {
+            // 每个数字在本单位内只剩两个可放位置的，记下来
+            val pos = HashMap<Int, List<Int>>()
+            for (d in 1..9) {
+                if (unit.any { board[it] == d }) continue
+                val cells = unit.filter {
+                    board[it] == 0 && effMask(game, board, it) and bitOf(d) != 0
+                }
+                if (cells.size == 2) pos[d] = cells
+            }
+            val digits = pos.keys.toList()
+            for (x in digits.indices) {
+                for (y in x + 1 until digits.size) {
+                    val d1 = digits[x]
+                    val d2 = digits[y]
+                    if (pos[d1] != pos[d2]) continue
+                    val (a, b) = pos[d1]!!
+                    // d1、d2 必占 a、b 两格 → 这两格里的其它候选都可以删
+                    val elims = mutableListOf<Pair<Int, Int>>()
+                    for (i in listOf(a, b)) {
+                        for (d in 1..9) {
+                            if (d != d1 && d != d2 && game.notes[i] and bitOf(d) != 0) {
+                                elims += i to d
+                            }
+                        }
+                    }
+                    if (elims.isNotEmpty()) {
+                        return Hint(
+                            technique = "隐性数对法",
+                            explanation = "在$unitName 里，$d1 和 $d2 都只能放在${rc(a)}和${rc(b)}。" +
+                                "这两个数字必定占满这两格。\n\n" +
+                                "所以这两格里其它的候选数都不可能，可以删掉（共 ${elims.size} 个）。" +
+                                "删完再点提示，往往能接出下一步。",
+                            targets = listOf(a, b),
+                            related = unit.filter { it != a && it != b && board[it] == 0 },
+                            digit = d1,
+                            place = false,
+                            eliminations = elims
+                        )
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    // ---------- 5. 区块摒除法（宫内候选锁定到一行/列） ----------
 
     private fun findPointing(game: Game, board: IntArray): Hint? {
         for (b in 0 until 9) {
@@ -187,7 +266,7 @@ object SudokuTutor {
             for (d in 1..9) {
                 if (cells.any { board[it] == d }) continue
                 val places = cells.filter {
-                    board[it] == 0 && SudokuEngine.candidateMask(board, it) and bitOf(d) != 0
+                    board[it] == 0 && effMask(game, board, it) and bitOf(d) != 0
                 }
                 if (places.size !in 2..3) continue
 
@@ -202,7 +281,7 @@ object SudokuTutor {
                     if (elims.isNotEmpty()) {
                         return Hint(
                             technique = "区块摒除法",
-                            explanation = "第 ${b + 1} 宫里，$d 的候选位置全部落在第 ${r + 1} 行，" +
+                            explanation = "第 ${b + 1} 宫里，$d 的候选全部落在第 ${r + 1} 行，" +
                                 "说明这一宫的 $d 一定在这一行。\n\n" +
                                 "所以第 ${r + 1} 行其它宫的格子都不可能是 $d，" +
                                 "可以删掉这些候选（共 ${elims.size} 个）。",
@@ -226,7 +305,7 @@ object SudokuTutor {
                     if (elims.isNotEmpty()) {
                         return Hint(
                             technique = "区块摒除法",
-                            explanation = "第 ${b + 1} 宫里，$d 的候选位置全部落在第 ${c + 1} 列，" +
+                            explanation = "第 ${b + 1} 宫里，$d 的候选全部落在第 ${c + 1} 列，" +
                                 "说明这一宫的 $d 一定在这一列。\n\n" +
                                 "所以第 ${c + 1} 列其它宫的格子都不可能是 $d，" +
                                 "可以删掉这些候选（共 ${elims.size} 个）。",
@@ -243,14 +322,85 @@ object SudokuTutor {
         return null
     }
 
+    // ---------- 6. 行列区块法（行/列候选锁定到一宫） ----------
+
+    private fun findClaiming(game: Game, board: IntArray): Hint? {
+        for (r in 0 until 9) {
+            val rowCells = (0 until 9).map { r * 9 + it }
+            for (d in 1..9) {
+                if (rowCells.any { board[it] == d }) continue
+                val places = rowCells.filter {
+                    board[it] == 0 && effMask(game, board, it) and bitOf(d) != 0
+                }
+                if (places.size !in 2..3) continue
+                val bs = places.map { SudokuEngine.boxOf(it) }.distinct()
+                if (bs.size != 1) continue
+                val b = bs[0]
+                val elims = boxes[b]
+                    .filter { SudokuEngine.rowOf(it) != r && board[it] == 0 }
+                    .filter { game.notes[it] and bitOf(d) != 0 }
+                    .map { it to d }
+                if (elims.isNotEmpty()) {
+                    return Hint(
+                        technique = "行列区块法",
+                        explanation = "第 ${r + 1} 行里，$d 的候选全部落在第 ${b + 1} 宫，" +
+                            "说明这一行的 $d 一定在这一宫。\n\n" +
+                            "所以第 ${b + 1} 宫其它行的格子都不可能是 $d，" +
+                            "可以删掉这些候选（共 ${elims.size} 个）。",
+                        targets = places,
+                        related = elims.map { it.first }.distinct(),
+                        digit = d,
+                        place = false,
+                        eliminations = elims
+                    )
+                }
+            }
+        }
+        for (c in 0 until 9) {
+            val colCells = (0 until 9).map { it * 9 + c }
+            for (d in 1..9) {
+                if (colCells.any { board[it] == d }) continue
+                val places = colCells.filter {
+                    board[it] == 0 && effMask(game, board, it) and bitOf(d) != 0
+                }
+                if (places.size !in 2..3) continue
+                val bs = places.map { SudokuEngine.boxOf(it) }.distinct()
+                if (bs.size != 1) continue
+                val b = bs[0]
+                val elims = boxes[b]
+                    .filter { SudokuEngine.colOf(it) != c && board[it] == 0 }
+                    .filter { game.notes[it] and bitOf(d) != 0 }
+                    .map { it to d }
+                if (elims.isNotEmpty()) {
+                    return Hint(
+                        technique = "行列区块法",
+                        explanation = "第 ${c + 1} 列里，$d 的候选全部落在第 ${b + 1} 宫，" +
+                            "说明这一列的 $d 一定在这一宫。\n\n" +
+                            "所以第 ${b + 1} 宫其它列的格子都不可能是 $d，" +
+                            "可以删掉这些候选（共 ${elims.size} 个）。",
+                        targets = places,
+                        related = elims.map { it.first }.distinct(),
+                        digit = d,
+                        place = false,
+                        eliminations = elims
+                    )
+                }
+            }
+        }
+        return null
+    }
+
     /** 没有可教步骤时的技巧图鉴文案。 */
     const val GUIDE_TEXT =
-        "当前局面没有能一步看穿的基础技巧，可以：\n" +
-            "1. 开启「⚡ 自动草稿」后再点提示，就能学到数对、区块等消除技巧；\n" +
-            "2. 对照下面的技巧图鉴自己找一找。\n\n" +
+        "当前局面没有能一步看穿的技巧了，可以：\n" +
+            "1. 确认「⚡ 自动草稿」已开启——消除类技巧都要在草稿上进行；\n" +
+            "2. 对照下面的技巧图鉴自己找一找，实在不行就试填一个候选再用撤销回退。\n\n" +
             "📖 技巧图鉴（由易到难）\n" +
             "• 唯余法：一格所在行/列/宫已出现 8 个不同数字，只能填剩下的那个。\n" +
+            "• 排除收尾：候选被删到只剩一个，即可落子。\n" +
             "• 摒除法：某行/列/宫中，一个数字只剩一个可放的位置。\n" +
-            "• 数对占位：两格候选完全相同且只有两个数，这两数必占这两格，可删除同单位其它格中的它们。\n" +
-            "• 区块摒除：宫内某数字的候选全在一行/列，可删除该行/列其它宫中的该数字。"
+            "• 数对占位：两格候选完全相同且只有两个数，可删除同单位其它格中的这两个数。\n" +
+            "• 隐性数对：两个数字在某单位里只能放在同样两格，这两格的其它候选都可删。\n" +
+            "• 区块摒除：宫内某数字候选全在一行/列，可删该行/列其它宫的候选。\n" +
+            "• 行列区块：行/列内某数字候选全在一宫，可删该宫其它行/列的候选。"
 }
