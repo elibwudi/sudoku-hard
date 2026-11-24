@@ -149,7 +149,11 @@ class MainActivity : Activity() {
             g.selected = it
             boardView.invalidate()
         }
-        val applyLabel = if (hint.place) R.string.hint_apply_place else R.string.hint_apply_eliminate
+        val applyLabel = when {
+            hint.place -> R.string.hint_apply_place
+            hint.repairCell >= 0 -> R.string.hint_apply_repair
+            else -> R.string.hint_apply_eliminate
+        }
         AlertDialog.Builder(this)
             .setTitle(getString(R.string.hint_title_fmt, hint.technique))
             .setMessage(hint.explanation)
@@ -159,10 +163,10 @@ class MainActivity : Activity() {
     }
 
     private fun applyHint(g: Game, hint: SudokuTutor.Hint) {
-        if (hint.place) {
-            g.applyHintPlacement(hint.targets.first(), hint.digit)
-        } else {
-            g.applyHintEliminations(hint.eliminations)
+        when {
+            hint.place -> g.applyHintPlacement(hint.targets.first(), hint.digit)
+            hint.repairCell >= 0 -> g.applyHintNotesRepair(hint.repairCell)
+            else -> g.applyHintEliminations(hint.eliminations)
         }
         boardView.clearHint()
         refresh()

@@ -2,12 +2,16 @@ package com.kimiwork.sudoku
 
 /**
  * 新手指导引擎：分析当前盘面，按由易到难的顺序找出下一步逻辑，
- * 并生成中文讲解，帮助玩家理解"为什么"而不是直接报答案。
+ * 并用「观察 → 推理 → 结论」三段式中文讲解引导新手。
  *
- * 关键原则：以玩家当前的草稿（铅笔笔记）为推理基础——
- * 消除类提示删掉候选后，后续提示能基于删减后的草稿继续推进，形成教学链条。
+ * 草稿语义（保证提示永远正确）：
+ * - 自动草稿开启：草稿视为完整候选集（App 填充基线 + 只删不加），提示基于草稿推理，
+ *   可形成提示链；推理前先"体检"——发现非法标记或误删的正确候选时优先提示修正。
+ * - 自动草稿关闭：草稿视为个人备注（可能不完整），提示只按盘面合法候选推理，
+ *   绝不信任草稿内容，因此不会给出错误提示。
+ * - 所有落子提示都与唯一解核对，宁缺毋错。
  *
- * 技巧顺序：纠错 → 唯余法/排除收尾 → 摒除法 → 数对占位 → 隐性数对 → 区块摒除 → 行列区块。
+ * 技巧顺序：纠错 → 草稿体检 → 唯余/排除收尾 → 摒除 → 数对占位 → 隐性数对 → 区块摒除 → 行列区块。
  */
 object SudokuTutor {
 
@@ -17,13 +21,19 @@ object SudokuTutor {
         val targets: List<Int>,                       // 目标格（主高亮）
         val related: List<Int>,                       // 关联格（次高亮）
         val digit: Int,                                 // 涉及数字
-        val place: Boolean,                             // true=可帮落子；false=消除候选
-        val eliminations: List<Pair<Int, Int>> = emptyList() // (格子, 待删数字)
+        val place: Boolean,                             // true=可帮落子；false=消除/修正
+        val eliminations: List<Pair<Int, Int>> = emptyList(), // (格子, 待删数字)
+        val repairCell: Int = -1                        // >=0 时：恢复该格完整候选
     )
 
     private fun rc(i: Int) = "第 ${i / 9 + 1} 行第 ${i % 9 + 1} 列"
 
     private fun bitOf(d: Int) = SudokuEngine.bitOf(d)
+
+    private fun digitsOf(mask: Int) = (1..9).filter { mask and bitOf(it) != 0 }
+
+    private fun notesText(game: Game, i: Int): String =
+        digitsOf(game.notes[i]).joinToString("、")
 
     /** 每个格子的全部关联格（同行/列/宫），惰性预计算。 */
     private val peers: List<List<Int>> by lazy {
@@ -54,20 +64,21 @@ object SudokuTutor {
     private val boxes: List<List<Int>> by lazy { namedUnits.take(9).map { it.second } }
 
     /**
-     * 有效候选：优先使用玩家当前草稿（可能已被提示/手动删减），
-     * 草稿为空才回退到按盘面计算的全部合法候选。
+     * 有效候选：自动草稿开启时信任草稿（完整候选语义，可链式推理）；
+     * 否则只按盘面计算（手动草稿可能不完整，不可作为推理依据）。
      */
     private fun effMask(game: Game, board: IntArray, i: Int): Int = when {
         board[i] != 0 -> 0
-        game.notes[i] != 0 -> game.notes[i]
+        game.autoNotes && game.notes[i] != 0 -> game.notes[i]
         else -> SudokuEngine.candidateMask(board, i)
     }
 
-    /** 找出当前最值得教的一步；null 表示没有可教的基础技巧。 */
+    /** 找出当前最值得教的一步；null 表示没有可教的技巧。 */
     fun findHint(game: Game): Hint? {
         val board = IntArray(81) { game.valueAt(it) }
 
         findMistakeHint(game, board)?.let { return it }
+        findNotesProblem(game, board)?.let { return it }
         findNakedSingle(game, board)?.let { return it }
         findHiddenSingle(game, board)?.let { return it }
         findNakedPair(game, board)?.let { return it }
@@ -77,7 +88,7 @@ object SudokuTutor {
         return null
     }
 
-    // ---------- 0. 纠错 ----------
+    // ---------- 0. 纠错（填错的数字） ----------
 
     private fun findMistakeHint(game: Game, board: IntArray): Hint? {
         for (i in 0 until 81) {
@@ -87,17 +98,64 @@ object SudokuTutor {
             val why = if (conflict != null) {
                 "${rc(conflict)}也是 $d，同一行、列、宫内数字不能重复。"
             } else {
-                "这个数字与全局答案矛盾。"
+                "它与全局答案矛盾。"
             }
             return Hint(
                 technique = "先修正错误",
-                explanation = "${rc(i)}填的 $d 有问题：$why\n\n" +
-                    "点击「帮我填入」直接改成正确数字，或者自己擦掉重填。",
+                explanation = "【观察】${rc(i)}填了 $d。\n" +
+                    "【推理】$why\n" +
+                    "【结论】这一格不是 $d。点击「帮我填入」改成正确数字，或者自己擦掉重填。",
                 targets = listOf(i),
                 related = listOfNotNull(conflict),
                 digit = game.solution[i],
                 place = true
             )
+        }
+        return null
+    }
+
+    // ---------- 0.5 草稿体检（仅自动草稿模式：草稿必须是完整候选集） ----------
+
+    private fun findNotesProblem(game: Game, board: IntArray): Hint? {
+        if (!game.autoNotes) return null
+        for (i in 0 until 81) {
+            if (board[i] != 0 || game.notes[i] == 0) continue
+            val legal = SudokuEngine.candidateMask(board, i)
+
+            // (a) 草稿里标了当前盘面下非法的数字
+            val illegal = game.notes[i] and legal.inv() and 0x3FE
+            if (illegal != 0) {
+                val d = Integer.numberOfTrailingZeros(illegal and -illegal)
+                val src = peers[i].firstOrNull { board[it] == d }
+                val reason = if (src != null) "${rc(src)}已经是 $d，同一行/列/宫不能重复" else "$d 与盘面冲突"
+                return Hint(
+                    technique = "草稿有误",
+                    explanation = "【观察】${rc(i)}的草稿里标了 $d。\n" +
+                        "【推理】$reason，所以 $d 不可能放在这一格。\n" +
+                        "【结论】这个候选应当删掉。点击「帮我删除」去掉它。",
+                    targets = listOf(i),
+                    related = listOfNotNull(src),
+                    digit = d,
+                    place = false,
+                    eliminations = listOf(i to d)
+                )
+            }
+
+            // (b) 正确的候选被误删（草稿不含答案）
+            if (game.notes[i] and bitOf(game.solution[i]) == 0) {
+                return Hint(
+                    technique = "草稿不完整",
+                    explanation = "【观察】${rc(i)}的草稿只剩 ${notesText(game, i)}。\n" +
+                        "【推理】这些候选里少了真正可能填的数字——之前的编辑把它误删了。" +
+                        "以不完整的草稿继续推理，结论会出错。\n" +
+                        "【结论】点击「帮我修正」，把这一格恢复为完整候选，再重新排除。",
+                    targets = listOf(i),
+                    related = emptyList(),
+                    digit = game.solution[i],
+                    place = false,
+                    repairCell = i
+                )
+            }
         }
         return null
     }
@@ -110,14 +168,16 @@ object SudokuTutor {
             val mask = effMask(game, board, i)
             if (Integer.bitCount(mask) != 1) continue
             val d = Integer.numberOfTrailingZeros(mask)
+            if (d != game.solution[i]) continue // 宁缺毋错
             val rawMask = SudokuEngine.candidateMask(board, i)
 
-            if (game.notes[i] != 0 && Integer.bitCount(rawMask) > 1) {
-                // 靠之前删除候选（提示或手动）逼出来的唯一候选
+            if (game.autoNotes && game.notes[i] != 0 && Integer.bitCount(rawMask) > 1) {
                 return Hint(
                     technique = "排除收尾",
-                    explanation = "看${rc(i)}的草稿：经过前面的排除，候选已经被删到只剩 $d 了。\n\n" +
-                        "候选只剩一个，这一格就确定是 $d——这就是持续删减候选的价值。",
+                    explanation = "【观察】${rc(i)}的草稿只剩 $d。\n" +
+                        "【推理】经过前面的排除，其它候选都被证明不可能了；" +
+                        "候选只剩一个，这格就确定了。\n" +
+                        "【结论】${rc(i)} = $d。这就是持续删减候选的价值。",
                     targets = listOf(i),
                     related = peers[i].filter { board[it] != 0 },
                     digit = d,
@@ -128,9 +188,10 @@ object SudokuTutor {
             val excluded = (1..9).filter { it != d && peers[i].any { p -> board[p] == it } }
             return Hint(
                 technique = "唯余法",
-                explanation = "看${rc(i)}：它所在的行、列、宫已经出现了 " +
-                    "${excluded.joinToString("、")}。\n\n" +
-                    "1–9 里只剩 $d 没出现过，所以这一格只能填 $d。",
+                explanation = "【观察】${rc(i)}还是空格，看它所在的行、列、宫。\n" +
+                    "【推理】这些位置已经出现了 ${excluded.joinToString("、")}，" +
+                    "而每格必须填 1–9 中不重复的数字。\n" +
+                    "【结论】只剩 $d 没出现过，${rc(i)} = $d。",
                 targets = listOf(i),
                 related = peers[i].filter { board[it] != 0 },
                 digit = d,
@@ -149,19 +210,34 @@ object SudokuTutor {
                 val places = unit.filter {
                     board[it] == 0 && effMask(game, board, it) and bitOf(d) != 0
                 }
-                if (places.size == 1) {
-                    val i = places[0]
-                    return Hint(
-                        technique = "摒除法",
-                        explanation = "在$unitName 里找数字 $d：按当前草稿，其它空格都不能放 $d" +
-                            "（所在行/列已有 $d，或候选已被排除）。\n\n" +
-                            "整$unitName 只有${rc(i)}能放 $d，所以它就是 $d。",
-                        targets = listOf(i),
-                        related = unit.filter { it != i },
-                        digit = d,
-                        place = true
-                    )
+                if (places.size != 1) continue
+                val i = places[0]
+                if (d != game.solution[i]) continue // 宁缺毋错
+
+                // 逐个说明其它空格为什么被排除
+                val reasons = unit.filter { it != i && board[it] == 0 }.mapNotNull { cell ->
+                    peers[cell].firstOrNull { board[it] == d }?.let { src ->
+                        val rel = when {
+                            SudokuEngine.rowOf(src) == SudokuEngine.rowOf(cell) -> "同行"
+                            SudokuEngine.colOf(src) == SudokuEngine.colOf(cell) -> "同列"
+                            else -> "同宫"
+                        }
+                        "${rc(cell)}不能放（${rel}的${rc(src)}已是 $d）"
+                    }
                 }
+                val shown = reasons.take(5)
+                val more = if (reasons.size > 5) "\n……等共 ${reasons.size} 处被排除" else ""
+                return Hint(
+                    technique = "摒除法",
+                    explanation = "【观察】$unitName 里还没有 $d。\n" +
+                        "【推理】逐个看空格：\n${shown.joinToString("；\n")}$more\n" +
+                        "整$unitName 只有${rc(i)}能放 $d。\n" +
+                        "【结论】${rc(i)} = $d。",
+                    targets = listOf(i),
+                    related = unit.filter { it != i },
+                    digit = d,
+                    place = true
+                )
             }
         }
         return null
@@ -180,29 +256,31 @@ object SudokuTutor {
                     val b = pairs[y]
                     val mask = effMask(game, board, a)
                     if (mask != effMask(game, board, b)) continue
-                    val digits = (1..9).filter { mask and bitOf(it) != 0 }
-                    // 只有草稿里确实存在可删标记时，这个技巧才"看得见效果"
+                    val digits = digitsOf(mask)
+                    // 消除必须基于完整候选语义，否则看不到效果
                     val elims = mutableListOf<Pair<Int, Int>>()
                     for (i in unit) {
                         if (i == a || i == b || board[i] != 0) continue
                         for (d in digits) {
-                            if (game.notes[i] and bitOf(d) != 0) elims += i to d
+                            if (d != game.solution[i] && game.notes[i] and bitOf(d) != 0) {
+                                elims += i to d
+                            }
                         }
                     }
-                    if (elims.isNotEmpty()) {
-                        return Hint(
-                            technique = "数对占位法",
-                            explanation = "${rc(a)}和${rc(b)}的候选都只有 ${digits[0]} 和 ${digits[1]}。" +
-                                "无论谁是谁，这两个数字必定占满这两格。\n\n" +
-                                "所以$unitName 的其它空格都不可能是 ${digits[0]} 或 ${digits[1]}，" +
-                                "可以把这些候选删掉（共 ${elims.size} 个）。删完再点提示，往往能接出下一步。",
-                            targets = listOf(a, b),
-                            related = elims.map { it.first }.distinct(),
-                            digit = digits[0],
-                            place = false,
-                            eliminations = elims
-                        )
-                    }
+                    if (elims.isEmpty()) continue
+                    return Hint(
+                        technique = "数对占位法",
+                        explanation = "【观察】${rc(a)}和${rc(b)}的候选一模一样，都只有 ${digits[0]}、${digits[1]}。\n" +
+                            "【推理】如果 ${digits[0]} 不在这两格，两格就都是 ${digits[1]}——矛盾。" +
+                            "所以 ${digits[0]} 和 ${digits[1]} 必定占满这两格，只是顺序未定。\n" +
+                            "【结论】$unitName 的其它空格都不可能是 ${digits[0]} 或 ${digits[1]}，" +
+                            "可以删掉这些候选（共 ${elims.size} 个）。删完再点提示，往往能接出下一步。",
+                        targets = listOf(a, b),
+                        related = elims.map { it.first }.distinct(),
+                        digit = digits[0],
+                        place = false,
+                        eliminations = elims
+                    )
                 }
             }
         }
@@ -213,7 +291,6 @@ object SudokuTutor {
 
     private fun findHiddenPair(game: Game, board: IntArray): Hint? {
         for ((unitName, unit) in namedUnits) {
-            // 每个数字在本单位内只剩两个可放位置的，记下来
             val pos = HashMap<Int, List<Int>>()
             for (d in 1..9) {
                 if (unit.any { board[it] == d }) continue
@@ -229,29 +306,29 @@ object SudokuTutor {
                     val d2 = digits[y]
                     if (pos[d1] != pos[d2]) continue
                     val (a, b) = pos[d1]!!
-                    // d1、d2 必占 a、b 两格 → 这两格里的其它候选都可以删
                     val elims = mutableListOf<Pair<Int, Int>>()
                     for (i in listOf(a, b)) {
                         for (d in 1..9) {
-                            if (d != d1 && d != d2 && game.notes[i] and bitOf(d) != 0) {
+                            if (d != d1 && d != d2 && d != game.solution[i] &&
+                                game.notes[i] and bitOf(d) != 0
+                            ) {
                                 elims += i to d
                             }
                         }
                     }
-                    if (elims.isNotEmpty()) {
-                        return Hint(
-                            technique = "隐性数对法",
-                            explanation = "在$unitName 里，$d1 和 $d2 都只能放在${rc(a)}和${rc(b)}。" +
-                                "这两个数字必定占满这两格。\n\n" +
-                                "所以这两格里其它的候选数都不可能，可以删掉（共 ${elims.size} 个）。" +
-                                "删完再点提示，往往能接出下一步。",
-                            targets = listOf(a, b),
-                            related = unit.filter { it != a && it != b && board[it] == 0 },
-                            digit = d1,
-                            place = false,
-                            eliminations = elims
-                        )
-                    }
+                    if (elims.isEmpty()) continue
+                    return Hint(
+                        technique = "隐性数对法",
+                        explanation = "【观察】在$unitName 里，$d1 只能放在${rc(a)}或${rc(b)}，$d2 也一样。\n" +
+                            "【推理】$d1、$d2 必定占满这两格，其它数字挤不进来。\n" +
+                            "【结论】这两格里的其它候选（${notesText(game, a)} / ${notesText(game, b)}）" +
+                            "都不是 $d1、$d2 的都可以删掉（共 ${elims.size} 个）。删完再点提示接着看。",
+                        targets = listOf(a, b),
+                        related = unit.filter { it != a && it != b && board[it] == 0 },
+                        digit = d1,
+                        place = false,
+                        eliminations = elims
+                    )
                 }
             }
         }
@@ -276,15 +353,16 @@ object SudokuTutor {
                     val elims = (0 until 9)
                         .map { r * 9 + it }
                         .filter { SudokuEngine.boxOf(it) != b && board[it] == 0 }
-                        .filter { game.notes[it] and bitOf(d) != 0 }
+                        .filter { d != game.solution[it] && game.notes[it] and bitOf(d) != 0 }
                         .map { it to d }
                     if (elims.isNotEmpty()) {
                         return Hint(
                             technique = "区块摒除法",
-                            explanation = "第 ${b + 1} 宫里，$d 的候选全部落在第 ${r + 1} 行，" +
-                                "说明这一宫的 $d 一定在这一行。\n\n" +
-                                "所以第 ${r + 1} 行其它宫的格子都不可能是 $d，" +
-                                "可以删掉这些候选（共 ${elims.size} 个）。",
+                            explanation = "【观察】第 ${b + 1} 宫里，$d 的候选全部落在第 ${r + 1} 行" +
+                                "（${places.joinToString("、") { rc(it) }}）。\n" +
+                                "【推理】这一宫的 $d 不管最终在哪格，都占掉了第 ${r + 1} 行的 $d。\n" +
+                                "【结论】第 ${r + 1} 行其它宫的格子都不可能是 $d，" +
+                                "删掉这些候选（共 ${elims.size} 个）。",
                             targets = places,
                             related = elims.map { it.first }.distinct(),
                             digit = d,
@@ -300,15 +378,16 @@ object SudokuTutor {
                     val elims = (0 until 9)
                         .map { it * 9 + c }
                         .filter { SudokuEngine.boxOf(it) != b && board[it] == 0 }
-                        .filter { game.notes[it] and bitOf(d) != 0 }
+                        .filter { d != game.solution[it] && game.notes[it] and bitOf(d) != 0 }
                         .map { it to d }
                     if (elims.isNotEmpty()) {
                         return Hint(
                             technique = "区块摒除法",
-                            explanation = "第 ${b + 1} 宫里，$d 的候选全部落在第 ${c + 1} 列，" +
-                                "说明这一宫的 $d 一定在这一列。\n\n" +
-                                "所以第 ${c + 1} 列其它宫的格子都不可能是 $d，" +
-                                "可以删掉这些候选（共 ${elims.size} 个）。",
+                            explanation = "【观察】第 ${b + 1} 宫里，$d 的候选全部落在第 ${c + 1} 列" +
+                                "（${places.joinToString("、") { rc(it) }}）。\n" +
+                                "【推理】这一宫的 $d 不管最终在哪格，都占掉了第 ${c + 1} 列的 $d。\n" +
+                                "【结论】第 ${c + 1} 列其它宫的格子都不可能是 $d，" +
+                                "删掉这些候选（共 ${elims.size} 个）。",
                             targets = places,
                             related = elims.map { it.first }.distinct(),
                             digit = d,
@@ -338,15 +417,15 @@ object SudokuTutor {
                 val b = bs[0]
                 val elims = boxes[b]
                     .filter { SudokuEngine.rowOf(it) != r && board[it] == 0 }
-                    .filter { game.notes[it] and bitOf(d) != 0 }
+                    .filter { d != game.solution[it] && game.notes[it] and bitOf(d) != 0 }
                     .map { it to d }
                 if (elims.isNotEmpty()) {
                     return Hint(
                         technique = "行列区块法",
-                        explanation = "第 ${r + 1} 行里，$d 的候选全部落在第 ${b + 1} 宫，" +
-                            "说明这一行的 $d 一定在这一宫。\n\n" +
-                            "所以第 ${b + 1} 宫其它行的格子都不可能是 $d，" +
-                            "可以删掉这些候选（共 ${elims.size} 个）。",
+                        explanation = "【观察】第 ${r + 1} 行里，$d 的候选全部落在第 ${b + 1} 宫" +
+                            "（${places.joinToString("、") { rc(it) }}）。\n" +
+                            "【推理】这一行的 $d 一定在这一宫，所以这一宫其它行放不下 $d。\n" +
+                            "【结论】第 ${b + 1} 宫其它行的格子删掉候选 $d（共 ${elims.size} 个）。",
                         targets = places,
                         related = elims.map { it.first }.distinct(),
                         digit = d,
@@ -369,15 +448,15 @@ object SudokuTutor {
                 val b = bs[0]
                 val elims = boxes[b]
                     .filter { SudokuEngine.colOf(it) != c && board[it] == 0 }
-                    .filter { game.notes[it] and bitOf(d) != 0 }
+                    .filter { d != game.solution[it] && game.notes[it] and bitOf(d) != 0 }
                     .map { it to d }
                 if (elims.isNotEmpty()) {
                     return Hint(
                         technique = "行列区块法",
-                        explanation = "第 ${c + 1} 列里，$d 的候选全部落在第 ${b + 1} 宫，" +
-                            "说明这一列的 $d 一定在这一宫。\n\n" +
-                            "所以第 ${b + 1} 宫其它列的格子都不可能是 $d，" +
-                            "可以删掉这些候选（共 ${elims.size} 个）。",
+                        explanation = "【观察】第 ${c + 1} 列里，$d 的候选全部落在第 ${b + 1} 宫" +
+                            "（${places.joinToString("、") { rc(it) }}）。\n" +
+                            "【推理】这一列的 $d 一定在这一宫，所以这一宫其它列放不下 $d。\n" +
+                            "【结论】第 ${b + 1} 宫其它列的格子删掉候选 $d（共 ${elims.size} 个）。",
                         targets = places,
                         related = elims.map { it.first }.distinct(),
                         digit = d,
@@ -393,8 +472,8 @@ object SudokuTutor {
     /** 没有可教步骤时的技巧图鉴文案。 */
     const val GUIDE_TEXT =
         "当前局面没有能一步看穿的技巧了，可以：\n" +
-            "1. 确认「⚡ 自动草稿」已开启——消除类技巧都要在草稿上进行；\n" +
-            "2. 对照下面的技巧图鉴自己找一找，实在不行就试填一个候选再用撤销回退。\n\n" +
+            "1. 确认「⚡ 自动草稿」已开启——消除类技巧都要在完整草稿上进行；\n" +
+            "2. 对照下面的技巧图鉴自己找一找，实在不行就试填一个候选，错了用撤销回退。\n\n" +
             "📖 技巧图鉴（由易到难）\n" +
             "• 唯余法：一格所在行/列/宫已出现 8 个不同数字，只能填剩下的那个。\n" +
             "• 排除收尾：候选被删到只剩一个，即可落子。\n" +

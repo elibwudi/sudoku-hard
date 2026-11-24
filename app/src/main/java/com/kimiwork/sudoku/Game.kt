@@ -64,8 +64,8 @@ class Game(
         entries[i] = d
         notes[i] = 0
         if (d == solution[i]) {
-            // 增量更新：只从同行/列/宫移除该数字，绝不再加回用户手动删掉的标记
-            if (autoNotes) removeFromPeerNotes(i, d)
+            // 落子后总是从同行/列/宫的草稿中移除该数字（只删不加，不会覆盖手动删除）
+            removeFromPeerNotes(i, d)
             if (isComplete()) finished = true
         } else {
             mistakes++
@@ -91,8 +91,16 @@ class Game(
         pushUndo()
         entries[idx] = d
         notes[idx] = 0
-        if (autoNotes) removeFromPeerNotes(idx, d)
+        removeFromPeerNotes(idx, d)
         if (isComplete()) finished = true
+    }
+
+    /** 指导功能：把某一格的草稿恢复为当前盘面的完整合法候选（修正误删）。 */
+    fun applyHintNotesRepair(idx: Int) {
+        if (isGiven(idx) || finished) return
+        pushUndo()
+        val board = IntArray(81) { valueAt(it) }
+        notes[idx] = if (board[idx] == 0) SudokuEngine.candidateMask(board, idx) else 0
     }
 
     /** 指导功能：批量删除草稿候选（数对/区块等消除技巧）。 */

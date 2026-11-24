@@ -21,5 +21,6 @@
     <string name="hint_title_fmt">💡 %1$s</string>
     <string name="hint_apply_place">帮我填入</string>
     <string name="hint_apply_eliminate">帮我删除</string>
+    <string name="hint_apply_repair">帮我修正</string>
     <string name="hint_self">我自己来</string>
 </resources>
